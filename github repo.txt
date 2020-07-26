@@ -1,0 +1,187 @@
+>> For checking that Terraform is installed successfully or not :-
+
+
+terraform -version
+
+>> creating the Key :-
+
+resource "tls_private_key" "this" {
+  algorithm = "RSA"
+}
+
+module "key_pair" {
+  source = "terraform-aws-modules/key-pair/aws"
+
+  key_name   = "deployer-one"
+  public_key = tls_private_key.this.public_key_openssh
+
+
+>> Creating Security Group :-
+
+resource "aws_security_group" "allow_tls" {
+  name        = "deployerone-sg"
+  description = "Allow TLS inbound traffic"
+  vpc_id      = "vpc-16445a7e"
+
+  ingress {
+    description = "SSH"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "HTTP"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "allow_tls"
+  }
+}
+
+
+>> Launch an instance :-
+
+
+resource "aws_instance" "task1os"{
+  ami           = "ami-052c08d70def0ac62"
+  instance_type = "t2.micro"
+  key_name      ="deployer-one"
+  security_groups=[ "deployerone-sg" ]
+
+  tags = {
+    Name = "task1os"
+  }
+}
+
+
+>> Launch an EBS volume :-
+
+
+resource "aws_ebs_volume" "task1_ebs" {
+  availability_zone = "ap-south-1a"
+  size              = 1
+  type            ="gp2"
+
+  tags = {
+    Name = "task1_ebs"
+  }
+}
+
+
+>> Create a S3 Bucket:-
+
+
+resource “aws_s3_bucket” “mybucket”{
+ bucket = "roy6377”
+ acl = “public-read”
+provisioner “local-exec” {
+ command = “git clone https://github.com/rroy2018/hybridmulticloudtask_1/blob/master/task1.html" 
+ }
+ 
+ provisioner “local-exec” {
+ when = destroy 
+ command = “echo y | rmdir /s cloud_task1”
+ }
+}
+resource “aws_s3_bucket_object” “file_upload” {
+ depends_on = [
+ aws_s3_bucket.mybucket,
+ ]
+ bucket = “${aws_s3_bucket.mybucket.bucket}”
+ key = “my_pic.jpg”
+ source = “cloud_task1/pic.jpg”
+ acl =”public-read”
+
+}
+
+
+>> Create CloudFront Using S3 Bucket :-
+
+
+resource “aws_cloudfront_distribution” “s3_distribution” {
+ depends_on = [
+ aws_volume_attachment.task1_ebs_mount,
+ aws_s3_bucket_object.file_upload,
+ ]
+origin {
+ domain_name = “${aws_s3_bucket.mybucket.bucket}.s3.amazonaws.com”
+ origin_id = “task” 
+ }
+enabled = true
+ is_ipv6_enabled = true
+ default_root_object = “index.html”
+restrictions {
+ geo_restriction {
+ restriction_type = “none”
+ }
+ }
+default_cache_behavior {
+ allowed_methods = [“HEAD”, “GET”]
+ cached_methods = [“HEAD”, “GET”]
+ forwarded_values {
+ query_string = false
+ cookies {
+ forward = “none”
+ }
+ }
+ default_ttl = 3600
+ max_ttl = 86400
+ min_ttl = 0
+ target_origin_id = “task”
+ viewer_protocol_policy = “allow-all”
+ }
+price_class = “PriceClass_All”
+viewer_certificate {
+ cloudfront_default_certificate = true
+ } 
+
+}
+
+
+>> Use the Cloudfront URL to update in code in /var/www/html:-
+
+resource “null_resource” “nullremote3” {
+ depends_on = [
+ aws_cloudfront_distribution.s3_distribution,
+ ]
+connection {
+ type = “ssh”
+ user = “ec2-user”
+ private_key = “${tls_private_key.key1.private_key_pem}”
+ host = “${aws_instance.web_server.public_ip}”
+ }
+ 
+ provisioner “remote-exec” {
+ inline = [
+ “sudo sed -i ‘s@twerk@http://${aws_cloudfront_distribution.s3_distribution.domain_name}/${aws_s3_bucket_object.file_upload.key}@g' /var/www/html/index.html”,
+ “sudo systemctl restart httpd”
+ ]
+ }
+
+}
+
+
+>> we have created a code to run our web server automatically as soon as all the services our successfully run:-
+
+
+resource “null_resource” “nulllocal1” {
+ depends_on = [
+ null_resource.nullremote3,
+ ]
+provisioner “local-exec” {
+ command = “start chrome ${aws_instance.web_server.public_ip}”
+ }
+
+}
